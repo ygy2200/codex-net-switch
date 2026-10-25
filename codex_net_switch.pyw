@@ -45,7 +45,7 @@ def self_cmd_args(cli_arg):
         return [sys.executable, cli_arg]
     return [sys.executable, os.path.abspath(__file__), cli_arg]
 
-VERSION = '2.0'
+VERSION = '2.0.1'
 HOSTS = r'C:\Windows\System32\drivers\etc\hosts'
 BEGIN = '# >>> CODEX-OFFSHORE-BLOCK (managed by codex_net_switch) >>>'
 END   = '# <<< CODEX-OFFSHORE-BLOCK <<<'
@@ -371,8 +371,16 @@ if len(sys.argv) > 1:
         finally:
             globals()['HOSTS'] = orig_hosts
             if fake:
-                try: os.remove(fake)
-                except OSError: pass
+                import glob as _g
+                for junk in _g.glob(os.path.join(os.path.dirname(fake), 'hosts.bak-codexnet.*')):
+                    try:
+                        os.remove(junk)
+                    except OSError:
+                        pass
+                try:
+                    os.remove(fake)
+                except OSError:
+                    pass
         sys.exit(1 if bad else 0)
     sys.exit(0)
 
