@@ -55,6 +55,10 @@ def stage_mid():  # 折叠/主题压力
     check('hero survived rebuild', app.hero_state.winfo_exists())
     check('statsig button text reflects state',
           app.btn_sg.cget('text') in ('防误伤：放行 statsig', '恢复 statsig 屏蔽', '防误伤（需先启用屏蔽）'))
+    m.autostart_set(True)
+    check('autostart set/get roundtrip (real registry)', m.autostart_get() is True)
+    m.autostart_set(False)
+    check('autostart cleared (restored)', m.autostart_get() is False)
     root.after(2200, stage_late)  # 等 _collect 线程把 hero 刷新出来
 
 root.after(600, stage_mid)  # 首轮 _collect 完成后开始

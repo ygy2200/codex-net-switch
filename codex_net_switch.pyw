@@ -33,7 +33,8 @@ def autostart_set(on):
         try:
             if on:
                 target, params = elevated_params('--minimize')
-                k.SetValueEx('CodexNetSwitch', 0, winreg.REG_SZ, f'"{target}" {params}')
+                winreg.SetValueEx(k, 'CodexNetSwitch', 0, winreg.REG_SZ,
+                                  f'"{target}" {params}')
             else:
                 winreg.DeleteValue(k, 'CodexNetSwitch')
         finally:
@@ -48,7 +49,7 @@ def self_cmd_args(cli_arg):
         return [sys.executable, cli_arg]
     return [sys.executable, os.path.abspath(__file__), cli_arg]
 
-VERSION = '2.0.4'
+VERSION = '2.0.5'
 HOSTS = r'C:\Windows\System32\drivers\etc\hosts'
 BEGIN = '# >>> CODEX-OFFSHORE-BLOCK (managed by codex_net_switch) >>>'
 END   = '# <<< CODEX-OFFSHORE-BLOCK <<<'
@@ -94,8 +95,12 @@ def build_block(statsig_on=True):
 
 def read_hosts():
     try:
-        with open(HOSTS, 'r', encoding='utf-8', errors='replace') as f:
-            return f.read().splitlines()
+        with open(HOSTS, 'r', encoding='utf-8-sig', errors='replace') as f:
+            # utf-8-sig 自动剥 BOM；再修历史损坏首行（BOM 曾被 ascii-replace 毁成 '?#'）
+            lines = f.read().splitlines()
+            if lines and lines[0].startswith('?#'):
+                lines[0] = lines[0][1:]
+            return lines
     except OSError:
         return None
 
@@ -386,7 +391,11 @@ if len(sys.argv) > 1:
             okb, _msgb = write_block('apply')
             t5 = ('fake-hosts broken block refuses write & keeps file',
                   okb is False and open(fake, encoding='ascii').read() == broken_content)
-            for n, ok in (t1, t2, t3, t4, t5):
+            open(fake, 'w', encoding='utf-8', newline='').write('\ufeff# bomline\n1.2.3.4 keep.me\n')
+            write_block('apply'); write_block('remove')
+            t6 = ('fake-hosts BOM first-line repaired',
+                  open(fake, 'rb').read().startswith(b'# bomline'))
+            for n, ok in (t1, t2, t3, t4, t5, t6):
                 tests.append((n, ok)); print(('PASS' if ok else 'FAIL'), n)
                 if not ok: bad.append(n)
         finally:
