@@ -13,11 +13,14 @@ Codex 桌面版网络开关 —— 为「第三方 API + 国内直连」场景�
 
 ## 功能
 
-- GUI 面板：屏蔽状态 / 8 个域名逐个劫持实测 / FlClash 进程与端口状态实时显示
+- **红绿灯总评**：打开就是一句话——"✅ 一切正常" / "⚠ codex 启动会慢（建议点XX）" / "⚠ 对话接口连不上"，不用自己看懂各项指标
 - 一键启用 / 停用屏蔽（改 hosts 时弹 UAC 确认，平时无需管理员运行）
 - `statsigapi.net` 单独放行开关（清单中唯一的公共域名，防其他软件被误伤）
-- 影响说明内嵌面板；状态每 15 秒自动刷新
-- hosts 原子写入（临时文件 + 替换），标记块精准管理，往返零差异
+- 浅色 / 深色双主题（右上角切换，自动记忆）；全控件悬停气泡白话注释；帮助区带名词速查
+- deepseek 对话 API 连通性实时检测；FlClash 进程与代理端口状态
+- 开机自启（最小化）；诊断报告一键复制；hosts 外部手改 2 秒内自动感知
+- hosts 安全链：写前滚动备份 3 份 → 残缺块拒绝写入 → 原子替换 → 写后回读验证
+- 技术详情（状态卡 / 域名清单）默认折叠，状态每 15 秒自动刷新
 
 ## 界面
 
@@ -43,11 +46,14 @@ Codex 桌面版网络开关 —— 为「第三方 API + 国内直连」场景�
 ## CLI
 
 ```
-codex_net_switch.pyw --status            # 状态 JSON（只读）
-codex_net_switch.pyw --selftest          # 9 项逻辑自测（不碰真实 hosts）
+codex_net_switch.pyw --status            # 状态 JSON 含解析 IP（只读）
+codex_net_switch.pyw --selftest          # 14 项逻辑自测（不碰真实 hosts）
 codex_net_switch.pyw --apply             # 启用屏蔽（需管理员）
 codex_net_switch.pyw --remove            # 停用屏蔽（需管理员）
 codex_net_switch.pyw --statsig on|off    # statsigapi.net 屏蔽/放行（需管理员）
+codex_net_switch.pyw --diagnose          # 诊断报告文本（排障用）
+codex_net_switch.pyw --minimize          # 启动后最小化（配合自启）
+codex_net_switch.pyw --version|--help    # 版本 / 帮助
 ```
 
 ## 构建（PyInstaller）

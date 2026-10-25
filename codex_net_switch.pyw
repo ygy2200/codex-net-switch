@@ -6,8 +6,11 @@
   --apply            写入屏蔽块（需管理员）
   --remove           删除屏蔽块（需管理员）
   --statsig on|off   statsigapi.net 放行(off)/屏蔽(on)（需管理员）
-  --status           输出状态 JSON（普通权限）
-  --selftest         逻辑自测（不动真 hosts）
+  --status           输出状态 JSON（含各域名解析 IP，普通权限）
+  --diagnose         输出诊断报告文本（排障用）
+  --selftest         14 项逻辑自测（不碰真实 hosts）
+  --minimize         启动后最小化（配合开机自启）
+  --version / --help 版本 / 帮助
 """
 import sys, os, socket, subprocess, json, ctypes, threading, winreg
 
@@ -45,7 +48,7 @@ def self_cmd_args(cli_arg):
         return [sys.executable, cli_arg]
     return [sys.executable, os.path.abspath(__file__), cli_arg]
 
-VERSION = '2.0.2'
+VERSION = '2.0.3'
 HOSTS = r'C:\Windows\System32\drivers\etc\hosts'
 BEGIN = '# >>> CODEX-OFFSHORE-BLOCK (managed by codex_net_switch) >>>'
 END   = '# <<< CODEX-OFFSHORE-BLOCK <<<'
