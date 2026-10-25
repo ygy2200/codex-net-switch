@@ -45,7 +45,7 @@ def self_cmd_args(cli_arg):
         return [sys.executable, cli_arg]
     return [sys.executable, os.path.abspath(__file__), cli_arg]
 
-VERSION = '1.3'
+VERSION = '2.0'
 HOSTS = r'C:\Windows\System32\drivers\etc\hosts'
 BEGIN = '# >>> CODEX-OFFSHORE-BLOCK (managed by codex_net_switch) >>>'
 END   = '# <<< CODEX-OFFSHORE-BLOCK <<<'
@@ -521,12 +521,33 @@ class App:
                   bg=C['gray_bg'], fg=C['ink'], activebackground=C['line'],
                   padx=12, pady=2, command=lambda: self.refresh_async(manual=True)).pack(side='right')
 
-        # 三张状态卡
-        cards = tk.Frame(self.body, bg=C['bg']); cards.pack(fill='x', padx=16, pady=(0, 10))
+        # ── 总评区（红绿灯）：一句话告诉你现在能不能正常用 ──
+        self.hero = self.card(self.body, fill='x', padx=16, pady=(0, 8))
+        self.hero_state = tk.Label(self.hero, text='正在检查…', font=(FONT, 17, 'bold'),
+                                   fg=C['sub'], bg=C['card'], anchor='w', justify='left')
+        self.hero_state.pack(fill='x', padx=16, pady=(12, 2))
+        self.hero_sub = tk.Label(self.hero, text='', font=(FONT, 11),
+                                 fg=C['ink'], bg=C['card'], anchor='w', justify='left',
+                                 wraplength=640)
+        self.hero_sub.pack(fill='x', padx=16, pady=(0, 4))
+        self.hero_why = tk.Label(self.hero, text='', font=FONT_M,
+                                 fg=C['sub'], bg=C['card'], anchor='w')
+        self.hero_why.pack(fill='x', padx=16, pady=(0, 12))
+
+        # ── 详情折叠区（默认收起）：状态卡 + 域名清单 ──
+        self.fold_detail = tk.Label(self.body, text='▸  技术详情（状态卡 / 域名屏蔽清单）',
+                                    font=FONT_M, fg=C['blue'], bg=C['bg'],
+                                    cursor='hand2', anchor='w')
+        self.fold_detail.pack(fill='x', padx=16, pady=(6, 2))
+        self.fold_detail.bind('<Button-1>', lambda e: self.toggle_detail())
+        self.detail = tk.Frame(self.body, bg=C['bg'])
+
+        # 四张状态卡（在详情区内）
+        cards = tk.Frame(self.detail, bg=C['bg']); cards.pack(fill='x', padx=16, pady=(0, 10))
         self.card_stats = []
         for key, title in (('block', '屏蔽状态'), ('fl', 'FlClash'), ('port', '代理端口 7890'),
                            ('ds', '对话 API (deepseek)')):
-            f = self.card(self.body, side='left', padx=(0, 10), fill='both', expand=True)
+            f = self.card(self.detail, side='left', padx=(0, 10), fill='both', expand=True)
             tk.Label(f, text=title, font=FONT_M, fg=C['sub'], bg=C['card']).pack(anchor='w', padx=14, pady=(10, 0))
             v = tk.Label(f, text='…', font=(FONT, 13, 'bold'), fg=C['sub'], bg=C['card'])
             v.pack(anchor='w', padx=14, pady=(2, 0))
@@ -536,8 +557,8 @@ class App:
             Tooltip(f, self.CARD_TIP[key])
             self.card_stats.append((v, sub))
 
-        # 域名列表卡
-        lst_wrap = self.card(self.body, fill='both', expand=True, padx=16, pady=(0, 10))
+        # 域名列表卡（在详情区内）
+        lst_wrap = self.card(self.detail, fill='both', expand=True, padx=16, pady=(0, 10))
         lh = tk.Frame(lst_wrap, bg=C['card']); lh.pack(fill='x', padx=14, pady=(10, 2))
         for t, cw, a in (('域名', 250, 'w'), ('状态', 80, 'center'), ('用途', 300, 'w')):
             tk.Label(lh, text=t, font=FONT_M, fg=C['sub'], bg=C['card'], width=cw // 8, anchor=a).pack(side='left')
@@ -561,12 +582,13 @@ class App:
 
         # 操作区
         ops = tk.Frame(self.body, bg=C['bg']); ops.pack(fill='x', padx=16, pady=(0, 6))
-        self.btn_on = tk.Button(ops, text='启用屏蔽', font=(FONT, 10, 'bold'), relief='flat',
+        self.ops_anchor = ops
+        self.btn_on = tk.Button(ops, text='启用屏蔽（日常用这个）', font=(FONT, 10, 'bold'), relief='flat',
                                 cursor='hand2', padx=18, pady=7,
                                 command=lambda: self.act('--apply'))
         self.btn_on.pack(side='left')
         Tooltip(self.btn_on, '打开总开关：让 codex 的境外请求"立刻失败"而不是干等\n几十秒超时。适合平时用 deepseek 干活的状态。')
-        self.btn_off = tk.Button(ops, text='停用屏蔽', font=(FONT, 10, 'bold'), relief='flat',
+        self.btn_off = tk.Button(ops, text='停用屏蔽（用官方账号前点这个）', font=(FONT, 10, 'bold'), relief='flat',
                                  cursor='hand2', padx=18, pady=7,
                                  command=lambda: self.act('--remove'))
         self.btn_off.pack(side='left', padx=(10, 0))
@@ -647,6 +669,15 @@ class App:
         self.root.clipboard_append('https://github.com/ygy2200/codex-net-switch')
         self.tip.config(text='✓ 仓库链接已复制', fg=C['green'])
 
+    def toggle_detail(self):
+        if self.detail.winfo_ismapped():
+            self.detail.pack_forget(); self.fold_detail.config(text='▸  技术详情（状态卡 / 域名屏蔽清单）')
+            self._resize_center()
+        else:
+            self.detail.pack(fill='both', expand=True, before=self.ops_anchor)
+            self.fold_detail.config(text='▼  技术详情（状态卡 / 域名屏蔽清单）')
+            self._resize_center()
+
     def toggle_help(self):
         if self.help.winfo_ismapped():
             self.help.pack_forget(); self.fold_lbl.config(text='▸  影响说明')
@@ -696,10 +727,36 @@ class App:
         except tk.TclError:
             pass
 
+    VERDICT_FG = {'green': 'green', 'yellow': 'yellow', 'red': 'red', 'gray': 'sub'}
+
+    def _set_verdict(self, level, title, sub):
+        self.hero_state.config(text=title, fg=C[self.VERDICT_FG[level]])
+        self.hero_sub.config(text=sub)
+
     def _apply(self, data):
         if self._closed:
             return
         present, sg, run_, alive, ds_ok, res = data
+        # ── 红绿灯总评（优先级：对话接口 > hosts 可读 > 屏蔽状态）──
+        if ds_ok is False:
+            self._set_verdict('red', '⚠ 对话接口连不上',
+                              '聊天会失败。先检查网络或 deepseek 服务状态，然后点右上角「刷新」。')
+        elif present is None:
+            self._set_verdict('red', '⚠ 无法读取 hosts',
+                              '权限异常。右键本工具，选"以管理员身份运行"再试。')
+        elif present is True:
+            self._set_verdict('green', '✅ 一切正常', 'codex 可以正常、快速地使用——这就是日常该有的样子。')
+        elif run_:
+            self._set_verdict('green', '✅ 正常（走代理）',
+                              '屏蔽关着，但 FlClash 在跑，codex 走代理不受影响。注意别关 FlClash。')
+        else:
+            self._set_verdict('yellow', '⚠ codex 启动会慢',
+                              '屏蔽和 FlClash 都没开。平时建议点下方蓝色按钮「启用屏蔽」。')
+        self.hero_why.config(text='明细：屏蔽 {} · FlClash {} · 代理端口 {} · 对话接口 {}'.format(
+            '开' if present else ('?' if present is None else '关'),
+            '运行中' if run_ else '没开',
+            '通' if alive else '不通',
+            '正常' if ds_ok else '不通'))
         b, fl, pt, ds = self.card_stats  # 每项 = (状态大字, 结论小字)
         if present is True:
             b[0].config(text='● 已开启', fg=C['green'])
