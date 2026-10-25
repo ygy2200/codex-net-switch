@@ -45,7 +45,7 @@ def self_cmd_args(cli_arg):
         return [sys.executable, cli_arg]
     return [sys.executable, os.path.abspath(__file__), cli_arg]
 
-VERSION = '1.2'
+VERSION = '1.3'
 HOSTS = r'C:\Windows\System32\drivers\etc\hosts'
 BEGIN = '# >>> CODEX-OFFSHORE-BLOCK (managed by codex_net_switch) >>>'
 END   = '# <<< CODEX-OFFSHORE-BLOCK <<<'
@@ -529,9 +529,12 @@ class App:
             f = self.card(self.body, side='left', padx=(0, 10), fill='both', expand=True)
             tk.Label(f, text=title, font=FONT_M, fg=C['sub'], bg=C['card']).pack(anchor='w', padx=14, pady=(10, 0))
             v = tk.Label(f, text='…', font=(FONT, 13, 'bold'), fg=C['sub'], bg=C['card'])
-            v.pack(anchor='w', padx=14, pady=(2, 12))
+            v.pack(anchor='w', padx=14, pady=(2, 0))
+            sub = tk.Label(f, text='', font=FONT_M, fg=C['sub'], bg=C['card'],
+                           wraplength=145, justify='left')
+            sub.pack(anchor='w', padx=14, pady=(1, 10))
             Tooltip(f, self.CARD_TIP[key])
-            self.card_stats.append(v)
+            self.card_stats.append((v, sub))
 
         # 域名列表卡
         lst_wrap = self.card(self.body, fill='both', expand=True, padx=16, pady=(0, 10))
@@ -568,7 +571,7 @@ class App:
                                  command=lambda: self.act('--remove'))
         self.btn_off.pack(side='left', padx=(10, 0))
         Tooltip(self.btn_off, '关掉总开关，恢复 Windows 原样。\n想登录 OpenAI 官方账号 / 用云端功能前，先点这里停用。')
-        self.btn_sg = tk.Button(ops, text='statsig 放行', font=(FONT, 10, 'bold'), relief='flat',
+        self.btn_sg = tk.Button(ops, text='防误伤：放行 statsig', font=(FONT, 10, 'bold'), relief='flat',
                                 cursor='hand2', padx=14, pady=7,
                                 bg=C['yellow_bg'], fg=C['yellow'],
                                 activebackground=C['yellow_bg'], command=self.toggle_statsig)
@@ -697,17 +700,38 @@ class App:
         if self._closed:
             return
         present, sg, run_, alive, ds_ok, res = data
-        b, fl, pt, ds = self.card_stats
-        if present is None:
-            b.config(text='无法读取', fg=C['red'])
+        b, fl, pt, ds = self.card_stats  # 每项 = (状态大字, 结论小字)
+        if present is True:
+            b[0].config(text='● 已开启', fg=C['green'])
+            b[1].config(text='codex 启动不卡等\n（推荐的日常状态）')
+        elif present is False:
+            b[0].config(text='○ 已停用', fg=C['sub'])
+            b[1].config(text='恢复原样；FlClash 没开时\n启动会变慢')
         else:
-            b.config(text='● 开启' if present else '○ 停用', fg=C['green'] if present else C['sub'])
-        # FlClash 未跑+屏蔽停用 = codex 将直连境外（慢）→ 黄色警示；其余未跑为中性灰
+            b[0].config(text='无法读取', fg=C['red'])
+            b[1].config(text='hosts 读不到，权限异常')
         warn_fl = (not run_) and (present is False)
-        fl.config(text='未运行' if not run_ else '运行中',
-                  fg=C['yellow'] if warn_fl else (C['green'] if run_ else C['sub']))
-        pt.config(text='可用' if alive else '不通', fg=C['green'] if alive else C['red'])
-        ds.config(text='正常' if ds_ok else '不可达', fg=C['green'] if ds_ok else C['red'])
+        if run_:
+            fl[0].config(text='运行中', fg=C['green'])
+            fl[1].config(text='代理软件正常，\ncodex 走它分流')
+        elif warn_fl:
+            fl[0].config(text='未运行', fg=C['yellow'])
+            fl[1].config(text='⚠ 屏蔽也停着：\ncodex 启动会慢')
+        else:
+            fl[0].config(text='未运行', fg=C['sub'])
+            fl[1].config(text='没关系，屏蔽已兜底')
+        if alive:
+            pt[0].config(text='正常', fg=C['green'])
+            pt[1].config(text='FlClash 工作中')
+        else:
+            pt[0].config(text='不通', fg=C['red'])
+            pt[1].config(text='FlClash 没开或异常\n（不影响屏蔽功能）')
+        if ds_ok:
+            ds[0].config(text='正常', fg=C['green'])
+            ds[1].config(text='可以正常对话干活')
+        else:
+            ds[0].config(text='不可达', fg=C['red'])
+            ds[1].config(text='⚠ 聊天会失败，\n先查网络再干活')
         # 主按钮状态高亮：开启→停用醒目；停用→启用醒目
         on = present is True
         off_hot = present is False
@@ -724,8 +748,8 @@ class App:
         sg_ok = present is True
         self.btn_sg.config(
             state='normal' if sg_ok else 'disabled',
-            text=('statsig 恢复屏蔽' if sg is False else 'statsig 放行') if sg_ok
-                 else 'statsig（需先启用屏蔽）')
+            text=('恢复 statsig 屏蔽' if sg is False else '防误伤：放行 statsig') if sg_ok
+                 else '防误伤（需先启用屏蔽）')
         for dom, _ in DOMAINS:
             st = res.get(dom, 'error')
             w = self.rows[dom]
