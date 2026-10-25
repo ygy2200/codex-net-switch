@@ -45,7 +45,7 @@ def self_cmd_args(cli_arg):
         return [sys.executable, cli_arg]
     return [sys.executable, os.path.abspath(__file__), cli_arg]
 
-VERSION = '1.1'
+VERSION = '1.2'
 HOSTS = r'C:\Windows\System32\drivers\etc\hosts'
 BEGIN = '# >>> CODEX-OFFSHORE-BLOCK (managed by codex_net_switch) >>>'
 END   = '# <<< CODEX-OFFSHORE-BLOCK <<<'
@@ -60,14 +60,14 @@ OLD_MARKERS = ('# codex sentry block 2026-10-25', '# codex offshore block 2026-1
 ICON = os.path.join(getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__))), 'icon.ico')
 
 USE = {
-    'auth.openai.com': 'OpenAI 登录检查（API key 模式不需要）',
-    'api.openai.com': 'OpenAI API / 插件目录（已用 deepseek 替代）',
-    'statsigapi.net': '⚠ 公共域名：特性开关服务（codex 在用）',
-    'statsigcdn.openai.com': 'OpenAI 专属特性开关 CDN',
-    'ab.chatgpt.com': 'A/B 实验配置',
-    'codex-portals.api.openai.com': '云通道（MASQUE）',
-    'o33249.ingest.us.sentry.io': '错误遥测上报（Sentry）',
-    'o33249.ingest.sentry.io': '错误遥测上报（Sentry）',
+    'auth.openai.com': 'OpenAI 的登录验证服务器（你用 deepseek 钥匙，用不着它）',
+    'api.openai.com': 'OpenAI 官方接口（已换成 deepseek，不再走它）',
+    'statsigapi.net': '⚠ 公用服务：决定开哪些实验功能，别的软件可能也用它',
+    'statsigcdn.openai.com': '上一条的 OpenAI 专用资源库',
+    'ab.chatgpt.com': '小白鼠分组服务器（A/B 测试用）',
+    'codex-portals.api.openai.com': 'codex 连 OpenAI 云端的专用通道',
+    'o33249.ingest.us.sentry.io': '报错回传服务（发不出去也不影响使用）',
+    'o33249.ingest.sentry.io': '报错回传服务（发不出去也不影响使用）',
 }
 
 GROUPS = [
@@ -424,7 +424,56 @@ def apply_titlebar_dark(root, dark):
     except Exception:
         pass
 
+class Tooltip:
+    """悬停气泡注释：鼠标放上去 0.5 秒弹出说明，不占界面版面"""
+    def __init__(self, widget, text, delay=500):
+        self.w, self.text, self.delay = widget, text, delay
+        self.id = None
+        self.tip = None
+        widget.bind('<Enter>', self._enter, add='+')
+        widget.bind('<Leave>', self._leave, add='+')
+        widget.bind('<ButtonPress>', self._leave, add='+')
+
+    def _enter(self, _=None):
+        self.id = self.w.after(self.delay, self._show)
+
+    def _leave(self, _=None):
+        if self.id:
+            self.w.after_cancel(self.id)
+            self.id = None
+        if self.tip:
+            self.tip.destroy()
+            self.tip = None
+
+    def _show(self):
+        if self.tip or not self.text:
+            return
+        x = self.w.winfo_rootx() + 12
+        y = self.w.winfo_rooty() + self.w.winfo_height() + 6
+        self.tip = tk.Toplevel(self.w)
+        self.tip.wm_overrideredirect(True)
+        self.tip.wm_geometry(f'+{x}+{y}')
+        tk.Label(self.tip, text=self.text, font=FONT_M, justify='left',
+                 bg='#1c2333', fg='#e6e9f0', padx=10, pady=6).pack()
+
 class App:
+    CARD_TIP = {
+        'block': '总开关。\n开：codex 连下面那些境外地址时会立刻失败，不再干等几十秒——\n启动变快，聊天功能不受影响。\n关：恢复 Windows 原样（想用 OpenAI 官方账号前要先关）。',
+        'fl': 'FlClash = 你的翻墙代理软件。\n开着时 codex 的流量全走它分流，一切正常；\n没开时才需要靠本工具的屏蔽来避免卡等。',
+        'port': 'FlClash 的代理端口号（7890）。\n"可用" = 代理软件正常工作中。',
+        'ds': '你的 AI 对话接口（deepseek，国内服务器）。\n它显示"正常"就代表聊天/写代码功能没问题。',
+    }
+    DOM_TIP = {
+        'auth.openai.com': 'OpenAI 检查"你登录了没有"的服务器。\n你用 deepseek 钥匙，不需要登录 OpenAI，\n所以连不上它毫发无损。',
+        'api.openai.com': 'OpenAI 官方接口地址。\n你的对话已改走 deepseek，这个用不上；\n但 codex 启动时还是会去问它要插件列表，白等。',
+        'statsigapi.net': '公用开关服务：告诉应用"哪些实验功能要打开"。\n⚠ 它不是 OpenAI 独有——你电脑上其他软件也可能用。\n哪个软件联网出问题，就点上方黄色按钮单独放行它。',
+        'statsigcdn.openai.com': '上一条对应的 OpenAI 专用资源下载地址。',
+        'ab.chatgpt.com': 'A/B 测试服务器：把用户分组试不同界面。\n对正常使用毫无影响。',
+        'codex-portals.api.openai.com': 'codex 连 OpenAI 云端功能的专用通道。\n你不用官方云端功能，连不上无所谓。',
+        'o33249.ingest.us.sentry.io': '报错回传服务：程序出错时把错误发回给 OpenAI。\n发不出去也完全不影响你使用，只是官方收不到日志。',
+        'o33249.ingest.sentry.io': '报错回传服务（备用地址），同上。',
+    }
+
     def __init__(self, root):
         self.root = root
         root.title(f'Codex 网络开关 v{VERSION}')
@@ -477,10 +526,11 @@ class App:
         self.card_stats = []
         for key, title in (('block', '屏蔽状态'), ('fl', 'FlClash'), ('port', '代理端口 7890'),
                            ('ds', '对话 API (deepseek)')):
-            f = self.card(cards, side='left', padx=(0, 10), fill='both', expand=True)
+            f = self.card(self.body, side='left', padx=(0, 10), fill='both', expand=True)
             tk.Label(f, text=title, font=FONT_M, fg=C['sub'], bg=C['card']).pack(anchor='w', padx=14, pady=(10, 0))
             v = tk.Label(f, text='…', font=(FONT, 13, 'bold'), fg=C['sub'], bg=C['card'])
             v.pack(anchor='w', padx=14, pady=(2, 12))
+            Tooltip(f, self.CARD_TIP[key])
             self.card_stats.append(v)
 
         # 域名列表卡
@@ -503,6 +553,7 @@ class App:
                          width=40, anchor='w').pack(side='left')
                 row.bind('<Enter>', lambda e, r=row: r.config(bg=C['row_hover']))
                 row.bind('<Leave>', lambda e, r=row: r.config(bg=C['card']))
+                Tooltip(row, self.DOM_TIP[dom])
                 self.rows[dom] = st
 
         # 操作区
@@ -511,29 +562,36 @@ class App:
                                 cursor='hand2', padx=18, pady=7,
                                 command=lambda: self.act('--apply'))
         self.btn_on.pack(side='left')
+        Tooltip(self.btn_on, '打开总开关：让 codex 的境外请求"立刻失败"而不是干等\n几十秒超时。适合平时用 deepseek 干活的状态。')
         self.btn_off = tk.Button(ops, text='停用屏蔽', font=(FONT, 10, 'bold'), relief='flat',
                                  cursor='hand2', padx=18, pady=7,
                                  command=lambda: self.act('--remove'))
         self.btn_off.pack(side='left', padx=(10, 0))
+        Tooltip(self.btn_off, '关掉总开关，恢复 Windows 原样。\n想登录 OpenAI 官方账号 / 用云端功能前，先点这里停用。')
         self.btn_sg = tk.Button(ops, text='statsig 放行', font=(FONT, 10, 'bold'), relief='flat',
                                 cursor='hand2', padx=14, pady=7,
                                 bg=C['yellow_bg'], fg=C['yellow'],
                                 activebackground=C['yellow_bg'], command=self.toggle_statsig)
         self.btn_sg.pack(side='left', padx=(10, 0))
         self.btn_sg._normal_bg = C['yellow_bg']
+        Tooltip(self.btn_sg, 'statsigapi.net 是公用地址（见列表第二组），\n别的软件可能也在用。哪个软件联网异常就点这里\n把它单独放行，其余屏蔽保持不变。')
         for b in (self.btn_on, self.btn_off, self.btn_sg):
             self._bind_hover(b)
 
         # 工具行：开机自启 + 导出诊断
         tools = tk.Frame(self.body, bg=C['bg']); tools.pack(fill='x', padx=16, pady=(2, 0))
         self.auto_var = tk.BooleanVar(value=autostart_get())
-        tk.Checkbutton(tools, text='开机自启（最小化）', variable=self.auto_var,
-                       font=FONT_M, fg=C['ink'], bg=C['bg'], activebackground=C['bg'],
-                       selectcolor=C['card'], cursor='hand2',
-                       command=self.toggle_autostart).pack(side='left')
-        tk.Button(tools, text='导出诊断', font=FONT_M, relief='flat', cursor='hand2',
-                  bg=C['gray_bg'], fg=C['ink'], activebackground=C['line'],
-                  padx=10, pady=2, command=self.copy_diagnose).pack(side='right')
+        _cb = tk.Checkbutton(tools, text='开机自启（最小化）', variable=self.auto_var,
+                             font=FONT_M, fg=C['ink'], bg=C['bg'], activebackground=C['bg'],
+                             selectcolor=C['card'], cursor='hand2',
+                             command=self.toggle_autostart)
+        _cb.pack(side='left')
+        Tooltip(_cb, '开机时自动启动本工具，最小化待在任务栏，\n不弹窗打扰。')
+        _dg = tk.Button(tools, text='导出诊断', font=FONT_M, relief='flat', cursor='hand2',
+                        bg=C['gray_bg'], fg=C['ink'], activebackground=C['line'],
+                        padx=10, pady=2, command=self.copy_diagnose)
+        _dg.pack(side='right')
+        Tooltip(_dg, '把当前各项状态整理成一段文字并复制到剪贴板，\n方便发给别人（或发给 AI）帮你排查问题。')
 
         # 底部状态条 + 可折叠说明
         self.tip = tk.Label(self.body, text='', font=FONT_M, fg=C['sub'], bg=C['bg'], anchor='w')
@@ -555,7 +613,15 @@ class App:
             '· 操作会弹 UAC 管理员确认（改 hosts 需要）；旧格式屏蔽已于 2026-10-25 迁移为\n'
             '  标准块（>>> CODEX-OFFSHORE-BLOCK >>> 标记），工具按标记精准增删。\n'
             '· codex 版本大更新后若启动又变慢，可能是遥测域名换了——找 agent 重新取证更新清单。\n'
-            '· 回滚兜底：etc 目录下有 hosts.bak-20261025-sentry / -cblock 两份历史备份。')
+            '· 回滚兜底：etc 目录下有 hosts.bak-20261025-sentry / -cblock 两份历史备份。\n'
+            '\n'
+            '【名词速查】\n'
+            '· hosts：Windows 里"域名 → IP 地址"的本地对照表。本工具就是往里写条目，\n'
+            '  让某些域名指向你自己电脑（127.0.0.1），从而"连不上"。\n'
+            '· 屏蔽 = 让请求立刻被拒绝（快），代替傻等几十秒超时（慢）。反正这些请求\n'
+            '  本来就是失败的，屏蔽只是让失败来得快一点。\n'
+            '· UAC：弹出"是否允许更改"的管理员确认框——修改 hosts 属于系统文件，必须经它。\n'
+            '· 劫持到 127.0.0.1：127.0.0.1 永远指你自己这台电脑，连它=自己连自己=秒失败。')
         self.help.config(state='disabled')
         self.foot = tk.Label(self.body, text=f'v{VERSION} · github.com/ygy2200/codex-net-switch · 点击复制链接',
                              font=FONT_M, fg=C['blue'], bg=C['bg'], cursor='hand2')
