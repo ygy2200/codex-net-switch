@@ -48,7 +48,7 @@ def self_cmd_args(cli_arg):
         return [sys.executable, cli_arg]
     return [sys.executable, os.path.abspath(__file__), cli_arg]
 
-VERSION = '2.0.3'
+VERSION = '2.0.4'
 HOSTS = r'C:\Windows\System32\drivers\etc\hosts'
 BEGIN = '# >>> CODEX-OFFSHORE-BLOCK (managed by codex_net_switch) >>>'
 END   = '# <<< CODEX-OFFSHORE-BLOCK <<<'
@@ -713,6 +713,7 @@ class App:
         else:
             self.help.pack(fill='x', padx=16, pady=(4, 10))
             self.fold_lbl.config(text='▼  影响说明')
+        self._resize_center()  # 窗口定高，展开/收起必须重算尺寸，否则 help 挤不进/收不回
 
     # ---- hover ----
     @staticmethod
@@ -748,13 +749,13 @@ class App:
             try:
                 self.root.after(0, lambda: self.tip.config(
                     text=f'刷新出错：{err}', fg=C['red']))
-            except tk.TclError:
+            except (tk.TclError, RuntimeError):
                 pass
             return
         try:
             self.root.after(0, lambda: self._apply(data))
-        except tk.TclError:
-            pass
+        except (tk.TclError, RuntimeError):
+            pass  # 窗口销毁瞬间 / 非 mainloop 状态：丢弃本次回调
 
     VERDICT_FG = {'green': 'green', 'yellow': 'yellow', 'red': 'red', 'gray': 'sub'}
 
@@ -891,7 +892,7 @@ class App:
             self.refresh_async()
         try:
             self.root.after(0, done)
-        except tk.TclError:
+        except (tk.TclError, RuntimeError):
             pass
 
     @staticmethod
