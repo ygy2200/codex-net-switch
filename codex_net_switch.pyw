@@ -9,8 +9,43 @@
   --status           输出状态 JSON（普通权限）
   --selftest         逻辑自测（不动真 hosts）
 """
-import sys, os, socket, subprocess, json, ctypes, threading
+import sys, os, socket, subprocess, json, ctypes, threading, winreg
 
+RUN_KEY = r'Software\Microsoft\Windows\CurrentVersion\Run'
+
+def autostart_get():
+    try:
+        k = winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY)
+        try:
+            winreg.QueryValueEx(k, 'CodexNetSwitch')
+            return True
+        finally:
+            winreg.CloseKey(k)
+    except OSError:
+        return False
+
+def autostart_set(on):
+    try:
+        k = winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE)
+        try:
+            if on:
+                target, params = elevated_params('--minimize')
+                k.SetValueEx('CodexNetSwitch', 0, winreg.REG_SZ, f'"{target}" {params}')
+            else:
+                winreg.DeleteValue(k, 'CodexNetSwitch')
+        finally:
+            winreg.CloseKey(k)
+        return True
+    except OSError:
+        return False
+
+def self_cmd_args(cli_arg):
+    """以子进程跑自身 CLI 的参数表"""
+    if getattr(sys, 'frozen', False):
+        return [sys.executable, cli_arg]
+    return [sys.executable, os.path.abspath(__file__), cli_arg]
+
+VERSION = '1.1'
 HOSTS = r'C:\Windows\System32\drivers\etc\hosts'
 BEGIN = '# >>> CODEX-OFFSHORE-BLOCK (managed by codex_net_switch) >>>'
 END   = '# <<< CODEX-OFFSHORE-BLOCK <<<'
@@ -34,6 +69,13 @@ USE = {
     'o33249.ingest.us.sentry.io': '错误遥测上报（Sentry）',
     'o33249.ingest.sentry.io': '错误遥测上报（Sentry）',
 }
+
+GROUPS = [
+    ('登录与 API', ['auth.openai.com', 'api.openai.com']),
+    ('特性开关', ['statsigapi.net', 'statsigcdn.openai.com', 'ab.chatgpt.com']),
+    ('云通道', ['codex-portals.api.openai.com']),
+    ('错误遥测', ['o33249.ingest.us.sentry.io', 'o33249.ingest.sentry.io']),
+]
 
 def build_block(statsig_on=True):
     lines = [BEGIN]
@@ -91,6 +133,7 @@ def write_block(mode, statsig_on=True):
     rest, old_found = strip_managed(lines)
     if mode == 'apply':
         rest = rest + [''] + build_block(statsig_on) + ['']
+    rotate_backup()
     tmp = HOSTS + '.codexnet.tmp'
     try:
         with open(tmp, 'w', encoding='ascii', errors='replace') as f:
@@ -104,6 +147,9 @@ def write_block(mode, statsig_on=True):
         except OSError:
             pass
         return False, f'写入失败：{e}'
+    got = read_hosts()  # 写后回读验证（一致性自检）
+    if got is None or [l for l in got if l.strip()] != [l for l in rest if l.strip()]:
+        return False, '警告：写入后回读不一致，请检查 hosts'
     subprocess.run(['ipconfig', '/flushdns'], capture_output=True)
     return True, ('已' + ('启用' if mode == 'apply' else '停用') + '屏蔽' + ('（含旧块迁移）' if old_found else ''))
 
@@ -122,22 +168,29 @@ def block_state(lines):
     statsig_on = any(not l.lstrip().startswith('#') for l in statsig_lines)
     return True, statsig_on
 
-def resolve_status():
-    """逐域名实测解析；全回环=blocked，部分回环=partial，其余=pass"""
-    res = {}
+def resolve_all():
+    """逐域名实测解析；返回 {域名: (状态, IP清单)}"""
+    out = {}
     for dom, _ in DOMAINS:
         try:
             ips = sorted(set(a[4][0] for a in socket.getaddrinfo(dom, 443, proto=socket.IPPROTO_TCP)))
             loop = [ip for ip in ips if ip in ('127.0.0.1', '::1')]
             if ips and len(loop) == len(ips):
-                res[dom] = 'blocked'
+                state = 'blocked'
             elif loop:
-                res[dom] = 'partial'
+                state = 'partial'
             else:
-                res[dom] = 'pass'
+                state = 'pass'
         except Exception:
-            res[dom] = 'error'
-    return res
+            ips, state = [], 'error'
+        out[dom] = (state, ips)
+    return out
+
+def resolve_status():
+    return {d: s for d, (s, _) in resolve_all().items()}
+
+def resolve_detail():
+    return {d: ips for d, (_, ips) in resolve_all().items()}
 
 def flclash_status():
     try:
@@ -154,45 +207,118 @@ def flclash_status():
         pass
     return running, alive
 
+def deepseek_status():
+    """对话 API 连通性（DNS+TCP 实测）"""
+    try:
+        s = socket.create_connection(('api.deepseek.com', 443), timeout=2.5)
+        s.close()
+        return True
+    except Exception:
+        return False
+
 def is_admin():
     try:
         return ctypes.windll.shell32.IsUserAnAdmin() != 0
     except Exception:
         return False
 
-def run_elevated(args):
-    """弹 UAC 以管理员重入自身（打包后即 exe 自身），返回是否成功发起"""
+def elevated_params(args):
+    """构造提权重入的 (target, params)；打包后即 exe 自身"""
     if getattr(sys, 'frozen', False):
-        target, params = sys.executable, args
-    else:
-        target, params = sys.executable, '"{}" {}'.format(os.path.abspath(__file__), args)
+        return sys.executable, args
+    return sys.executable, '"{}" {}'.format(os.path.abspath(__file__), args)
+
+def run_elevated(args):
+    """弹 UAC 以管理员重入自身，返回是否成功发起"""
+    target, params = elevated_params(args)
     rc = ctypes.windll.shell32.ShellExecuteW(None, 'runas', target, params, None, 0)
     return rc > 32
+
+def rotate_backup():
+    """写 hosts 前滚动备份：.2→.3、.1→.2、当前→.1（保留 3 份）"""
+    d = os.path.dirname(HOSTS)
+    n3 = os.path.join(d, 'hosts.bak-codexnet.3')
+    n2 = os.path.join(d, 'hosts.bak-codexnet.2')
+    n1 = os.path.join(d, 'hosts.bak-codexnet.1')
+    try:
+        if os.path.exists(n3):
+            os.remove(n3)
+        if os.path.exists(n2):
+            os.replace(n2, n3)
+        if os.path.exists(n1):
+            os.replace(n1, n2)
+        if os.path.exists(HOSTS):
+            with open(HOSTS, 'rb') as s, open(n1, 'wb') as t:
+                t.write(s.read())
+    except OSError:
+        pass  # 备份失败不阻断主流程（有历史 .bak 兜底）
+
+def uac_log(msg):
+    """提权实例的操作日志（无控制台，落 %TEMP% 供排查）"""
+    import time
+    try:
+        with open(os.path.join(os.environ.get('TEMP', '.'), 'codexnet_uac.log'), 'a',
+                  encoding='utf-8') as f:
+            f.write(f'{time.strftime("%Y-%m-%d %H:%M:%S")} [{VERSION}] {msg}\n')
+    except OSError:
+        pass
 
 # ---------------- CLI ----------------
 if len(sys.argv) > 1:
     a = sys.argv[1]
+    if a in ('--help', '-h', '/?'):
+        print(__doc__.strip())
+        print(f'Version {VERSION}')
+        sys.exit(0)
+    if a == '--version':
+        print(f'CodexNetSwitch {VERSION}')
+        sys.exit(0)
     if a == '--apply':
-        ok, msg = write_block('apply'); print(msg); sys.exit(0 if ok else 1)
+        ok, msg = write_block('apply'); uac_log(f'--apply: {ok} {msg}'); print(msg); sys.exit(0 if ok else 1)
     if a == '--remove':
-        ok, msg = write_block('remove'); print(msg); sys.exit(0 if ok else 1)
+        ok, msg = write_block('remove'); uac_log(f'--remove: {ok} {msg}'); print(msg); sys.exit(0 if ok else 1)
     if a == '--statsig':
         lines = read_hosts()
         present, _ = block_state(lines) if lines else (False, None)
         if not present:
             print('屏蔽块未启用，请先 --apply 再切 statsig'); sys.exit(1)
         ok, msg = write_block('apply', statsig_on=(sys.argv[2] == 'on'))
+        uac_log(f'--statsig {sys.argv[2]}: {ok} {msg}')
         print(msg); sys.exit(0 if ok else 1)
     if a == '--status':
         lines = read_hosts()
         present, sg = block_state(lines) if lines else (None, None)
-        print(json.dumps({'block': present, 'statsig_blocked': sg,
-                          'resolve': resolve_status(),
+        res = resolve_status()
+        print(json.dumps({'version': VERSION, 'block': present, 'statsig_blocked': sg,
+                          'resolve': res, 'resolve_ips': resolve_detail(),
                           'flclash': dict(zip(('process', 'port7890'), flclash_status()))},
                          ensure_ascii=False, indent=1))
         sys.exit(0)
+    if a == '--diagnose':
+        import time as _t
+        rep = ['CodexNetSwitch %s diagnose %s' % (VERSION, _t.strftime('%Y-%m-%d %H:%M:%S'))]
+        lines = read_hosts()
+        present, sg = block_state(lines) if lines else (None, None)
+        rep.append('hosts_read=%s block=%s statsig_blocked=%s' % ('ok' if lines is not None else 'FAIL', present, sg))
+        rep.append('flclash process=%s port7890=%s' % flclash_status())
+        rep.append('deepseek_api=%s' % deepseek_status())
+        for d, (s, ips) in resolve_all().items():
+            rep.append('%-8s %-34s %s' % (s, d, ips))
+        try:
+            rep.append('backups: ' + ', '.join(sorted(
+                f for f in os.listdir(os.path.dirname(HOSTS)) if 'codexnet' in f or 'bak-2026' in f)))
+        except OSError:
+            pass
+        print('\n'.join(rep))
+        sys.exit(0)
     if a == '--selftest':
         tests = []
+        t_, p_ = elevated_params('--apply')
+        if getattr(sys, 'frozen', False):
+            ok_ep = (t_ == sys.executable and p_ == '--apply')
+        else:
+            ok_ep = p_.startswith('"') and p_.endswith('" --apply')
+        tests.append(('elevated params mode-aware', ok_ep))
         b = build_block(True); tests.append(('block has markers', b[0] == BEGIN and b[-1] == END))
         b2 = build_block(False)
         sg = [l for l in b2 if 'statsigapi.net' in l]
@@ -254,19 +380,54 @@ if len(sys.argv) > 1:
 import tkinter as tk
 import tkinter.messagebox
 
-C = dict(bg='#f2f4f7', card='#ffffff', line='#e2e6ec',
-         ink='#1c2333', sub='#71798a',
-         blue='#2563eb', blue_d='#1e4fc4', blue_bg='#dbeafe',
-         green='#15803d', green_bg='#dcfce7',
-         red='#dc2626', red_bg='#fee2e2',
-         yellow='#b45309', yellow_bg='#fef3c7', gray_bg='#e8eaef')
+LIGHT = dict(bg='#f2f4f7', card='#ffffff', line='#e2e6ec',
+             ink='#1c2333', sub='#71798a',
+             blue='#2563eb', blue_d='#1e4fc4', blue_bg='#dbeafe',
+             green='#15803d', green_bg='#dcfce7',
+             red='#dc2626', red_bg='#fee2e2',
+             yellow='#b45309', yellow_bg='#fef3c7', gray_bg='#e8eaef',
+             row_hover='#f6f9ff', help_bg='#eef1f5')
+DARK = dict(bg='#151922', card='#1e2430', line='#2c3442',
+            ink='#e6e9f0', sub='#8a93a5',
+            blue='#3b82f6', blue_d='#2563eb', blue_bg='#1e3a5f',
+            green='#4ade80', green_bg='#14532d',
+            red='#f87171', red_bg='#5f1e1e',
+            yellow='#fbbf24', yellow_bg='#4a3812', gray_bg='#2c3442',
+            row_hover='#273043', help_bg='#171c26')
+C = dict(LIGHT)
+
+CONF_DIR = os.path.join(os.environ.get('APPDATA', '.'), 'CodexNetSwitch')
+
+def load_theme():
+    try:
+        with open(os.path.join(CONF_DIR, 'config.json'), encoding='utf-8') as f:
+            return json.load(f).get('theme', 'light')
+    except Exception:
+        return 'light'
+
+def save_theme(t):
+    try:
+        os.makedirs(CONF_DIR, exist_ok=True)
+        with open(os.path.join(CONF_DIR, 'config.json'), 'w', encoding='utf-8') as f:
+            json.dump({'theme': t}, f)
+    except OSError:
+        pass
 
 FONT, FONT_M, FONT_B = 'Microsoft YaHei UI', ('Microsoft YaHei UI', 9), ('Microsoft YaHei UI', 11, 'bold')
+
+def apply_titlebar_dark(root, dark):
+    """Windows 10/11 深色标题栏（随主题）"""
+    try:
+        hwnd = ctypes.windll.user32.GetParent(root.winfo_id())
+        val = ctypes.c_int(1 if dark else 0)
+        ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 20, ctypes.byref(val), ctypes.sizeof(val))
+    except Exception:
+        pass
 
 class App:
     def __init__(self, root):
         self.root = root
-        root.title('Codex 网络开关')
+        root.title(f'Codex 网络开关 v{VERSION}')
         root.configure(bg=C['bg'])
         try:
             root.iconbitmap(ICON)
@@ -276,6 +437,7 @@ class App:
         self.rows, self._closed = {}, False
         self._build()
         self.refresh_async()
+        self._watch_files()
 
     # ---- 构件 ----
     def _resize_center(self):
@@ -293,21 +455,28 @@ class App:
 
     def badge(self, master, text, fg, bg):
         return tk.Label(master, text=text, fg=fg, bg=bg, font=(FONT, 9, 'bold'),
-                        padx=9, pady=2)
+                        padx=9, pady=2, width=8)
 
     def _build(self):
+        self.body = tk.Frame(self.root, bg=C['bg'])
+        self.body.pack(fill='both', expand=True)
+        apply_titlebar_dark(self.root, load_theme() == 'dark')
         # 标题行
-        head = tk.Frame(self.root, bg=C['bg']); head.pack(fill='x', padx=16, pady=(14, 8))
+        head = tk.Frame(self.body, bg=C['bg']); head.pack(fill='x', padx=16, pady=(14, 8))
         tk.Label(head, text='Codex 网络开关', font=(FONT, 15, 'bold'),
                  fg=C['ink'], bg=C['bg']).pack(side='left')
+        tk.Button(head, text='主题', font=FONT_M, relief='flat', cursor='hand2',
+                  bg=C['gray_bg'], fg=C['ink'], activebackground=C['line'],
+                  padx=10, pady=2, command=self.toggle_theme).pack(side='right', padx=(6, 0))
         tk.Button(head, text='刷新', font=FONT_M, relief='flat', cursor='hand2',
                   bg=C['gray_bg'], fg=C['ink'], activebackground=C['line'],
                   padx=12, pady=2, command=lambda: self.refresh_async(manual=True)).pack(side='right')
 
         # 三张状态卡
-        cards = tk.Frame(self.root, bg=C['bg']); cards.pack(fill='x', padx=16, pady=(0, 10))
+        cards = tk.Frame(self.body, bg=C['bg']); cards.pack(fill='x', padx=16, pady=(0, 10))
         self.card_stats = []
-        for key, title in (('block', '屏蔽状态'), ('fl', 'FlClash'), ('port', '代理端口 7890')):
+        for key, title in (('block', '屏蔽状态'), ('fl', 'FlClash'), ('port', '代理端口 7890'),
+                           ('ds', '对话 API (deepseek)')):
             f = self.card(cards, side='left', padx=(0, 10), fill='both', expand=True)
             tk.Label(f, text=title, font=FONT_M, fg=C['sub'], bg=C['card']).pack(anchor='w', padx=14, pady=(10, 0))
             v = tk.Label(f, text='…', font=(FONT, 13, 'bold'), fg=C['sub'], bg=C['card'])
@@ -315,25 +484,29 @@ class App:
             self.card_stats.append(v)
 
         # 域名列表卡
-        lst_wrap = self.card(self.root, fill='both', expand=True, padx=16, pady=(0, 10))
+        lst_wrap = self.card(self.body, fill='both', expand=True, padx=16, pady=(0, 10))
         lh = tk.Frame(lst_wrap, bg=C['card']); lh.pack(fill='x', padx=14, pady=(10, 2))
         for t, cw, a in (('域名', 250, 'w'), ('状态', 80, 'center'), ('用途', 300, 'w')):
             tk.Label(lh, text=t, font=FONT_M, fg=C['sub'], bg=C['card'], width=cw // 8, anchor=a).pack(side='left')
         tk.Frame(lst_wrap, bg=C['line'], height=1).pack(fill='x', padx=14)
-        for dom, is_sg in DOMAINS:
-            row = tk.Frame(lst_wrap, bg=C['card']); row.pack(fill='x', padx=6)
-            tk.Label(row, text=dom, font=('Consolas', 9), fg=C['ink'], bg=C['card'],
-                     width=31, anchor='w').pack(side='left')
-            st = self.badge(row, '…', C['sub'], C['gray_bg'])
-            st.pack(side='left', padx=(0, 4))
-            tk.Label(row, text=USE[dom], font=FONT_M, fg=C['sub'], bg=C['card'],
-                     width=40, anchor='w').pack(side='left')
-            row.bind('<Enter>', lambda e, r=row: r.config(bg='#f6f9ff'))
-            row.bind('<Leave>', lambda e, r=row: r.config(bg=C['card']))
-            self.rows[dom] = st
+        for gname, gdoms in GROUPS:
+            glabel = tk.Label(lst_wrap, text='  ' + gname, font=(FONT, 9, 'bold'),
+                              fg=C['sub'], bg=C['card'], anchor='w')
+            glabel.pack(fill='x', padx=8, pady=(6, 1))
+            for dom in gdoms:
+                row = tk.Frame(lst_wrap, bg=C['card']); row.pack(fill='x', padx=6)
+                tk.Label(row, text=dom, font=('Consolas', 9), fg=C['ink'], bg=C['card'],
+                         width=31, anchor='w').pack(side='left')
+                st = self.badge(row, '…', C['sub'], C['gray_bg'])
+                st.pack(side='left', padx=(0, 4))
+                tk.Label(row, text=USE[dom], font=FONT_M, fg=C['sub'], bg=C['card'],
+                         width=40, anchor='w').pack(side='left')
+                row.bind('<Enter>', lambda e, r=row: r.config(bg=C['row_hover']))
+                row.bind('<Leave>', lambda e, r=row: r.config(bg=C['card']))
+                self.rows[dom] = st
 
         # 操作区
-        ops = tk.Frame(self.root, bg=C['bg']); ops.pack(fill='x', padx=16, pady=(0, 6))
+        ops = tk.Frame(self.body, bg=C['bg']); ops.pack(fill='x', padx=16, pady=(0, 6))
         self.btn_on = tk.Button(ops, text='启用屏蔽', font=(FONT, 10, 'bold'), relief='flat',
                                 cursor='hand2', padx=18, pady=7,
                                 command=lambda: self.act('--apply'))
@@ -351,15 +524,26 @@ class App:
         for b in (self.btn_on, self.btn_off, self.btn_sg):
             self._bind_hover(b)
 
+        # 工具行：开机自启 + 导出诊断
+        tools = tk.Frame(self.body, bg=C['bg']); tools.pack(fill='x', padx=16, pady=(2, 0))
+        self.auto_var = tk.BooleanVar(value=autostart_get())
+        tk.Checkbutton(tools, text='开机自启（最小化）', variable=self.auto_var,
+                       font=FONT_M, fg=C['ink'], bg=C['bg'], activebackground=C['bg'],
+                       selectcolor=C['card'], cursor='hand2',
+                       command=self.toggle_autostart).pack(side='left')
+        tk.Button(tools, text='导出诊断', font=FONT_M, relief='flat', cursor='hand2',
+                  bg=C['gray_bg'], fg=C['ink'], activebackground=C['line'],
+                  padx=10, pady=2, command=self.copy_diagnose).pack(side='right')
+
         # 底部状态条 + 可折叠说明
-        self.tip = tk.Label(self.root, text='', font=FONT_M, fg=C['sub'], bg=C['bg'], anchor='w')
+        self.tip = tk.Label(self.body, text='', font=FONT_M, fg=C['sub'], bg=C['bg'], anchor='w')
         self.tip.pack(fill='x', padx=16)
-        self.fold_lbl = tk.Label(self.root, text='▸  影响说明', font=FONT_M, fg=C['blue'],
+        self.fold_lbl = tk.Label(self.body, text='▸  影响说明', font=FONT_M, fg=C['blue'],
                                  bg=C['bg'], cursor='hand2', anchor='w')
         self.fold_lbl.pack(fill='x', padx=16, pady=(6, 0))
         self.fold_lbl.bind('<Button-1>', lambda e: self.toggle_help())
-        self.help = tk.Text(self.root, height=10, font=FONT_M, wrap='word', relief='flat',
-                            bg='#eef1f5', fg=C['ink'], padx=12, pady=8, spacing2=3)
+        self.help = tk.Text(self.body, height=10, font=FONT_M, wrap='word', relief='flat',
+                            bg=C['help_bg'], fg=C['ink'], padx=12, pady=8, spacing2=3)
         self.help.insert('end',
             '· 屏蔽开启：codex 对上述域名的请求毫秒级失败，不再傻等超时——FlClash 关着启动也快；\n'
             '  对话流量走 api.deepseek.com（国内直连），完全不受影响。\n'
@@ -373,6 +557,26 @@ class App:
             '· codex 版本大更新后若启动又变慢，可能是遥测域名换了——找 agent 重新取证更新清单。\n'
             '· 回滚兜底：etc 目录下有 hosts.bak-20261025-sentry / -cblock 两份历史备份。')
         self.help.config(state='disabled')
+        self.foot = tk.Label(self.body, text=f'v{VERSION} · github.com/ygy2200/codex-net-switch · 点击复制链接',
+                             font=FONT_M, fg=C['blue'], bg=C['bg'], cursor='hand2')
+        self.foot.pack(side='bottom', fill='x', padx=16, pady=(0, 6))
+        self.foot.bind('<Button-1>', lambda e: self._copy_repo())
+
+    def toggle_theme(self):
+        new = 'dark' if load_theme() == 'light' else 'light'
+        save_theme(new)
+        C.clear()
+        C.update(DARK if new == 'dark' else LIGHT)
+        self.rows.clear()
+        self.body.destroy()
+        self._build()
+        self._resize_center()
+        self.refresh_async()
+
+    def _copy_repo(self):
+        self.root.clipboard_clear()
+        self.root.clipboard_append('https://github.com/ygy2200/codex-net-switch')
+        self.tip.config(text='✓ 仓库链接已复制', fg=C['green'])
 
     def toggle_help(self):
         if self.help.winfo_ismapped():
@@ -405,10 +609,19 @@ class App:
         threading.Thread(target=self._collect, daemon=True).start()
 
     def _collect(self):
-        lines = read_hosts()
-        present, sg = block_state(lines) if lines else (None, None)
-        run_, alive = flclash_status()
-        data = (present, sg, run_, alive, resolve_status())
+        try:
+            lines = read_hosts()
+            present, sg = block_state(lines) if lines else (None, None)
+            run_, alive = flclash_status()
+            data = (present, sg, run_, alive, deepseek_status(), resolve_status())
+        except Exception as e:
+            err = str(e)[:80]
+            try:
+                self.root.after(0, lambda: self.tip.config(
+                    text=f'刷新出错：{err}', fg=C['red']))
+            except tk.TclError:
+                pass
+            return
         try:
             self.root.after(0, lambda: self._apply(data))
         except tk.TclError:
@@ -417,14 +630,18 @@ class App:
     def _apply(self, data):
         if self._closed:
             return
-        present, sg, run_, alive, res = data
-        b, fl, pt = self.card_stats
+        present, sg, run_, alive, ds_ok, res = data
+        b, fl, pt, ds = self.card_stats
         if present is None:
             b.config(text='无法读取', fg=C['red'])
         else:
             b.config(text='● 开启' if present else '○ 停用', fg=C['green'] if present else C['sub'])
-        fl.config(text='运行中' if run_ else '未运行', fg=C['green'] if run_ else C['sub'])
+        # FlClash 未跑+屏蔽停用 = codex 将直连境外（慢）→ 黄色警示；其余未跑为中性灰
+        warn_fl = (not run_) and (present is False)
+        fl.config(text='未运行' if not run_ else '运行中',
+                  fg=C['yellow'] if warn_fl else (C['green'] if run_ else C['sub']))
         pt.config(text='可用' if alive else '不通', fg=C['green'] if alive else C['red'])
+        ds.config(text='正常' if ds_ok else '不可达', fg=C['green'] if ds_ok else C['red'])
         # 主按钮状态高亮：开启→停用醒目；停用→启用醒目
         on = present is True
         off_hot = present is False
@@ -461,11 +678,24 @@ class App:
 
     # ---- 操作 ----
     def act(self, arg):
+        if arg == '--remove' and not tk.messagebox.askyesno(
+                '确认停用', '停用后 codex 将恢复直连境外：\n\n· FlClash 开着 → 走代理，一切正常\n· FlClash 关着 → 启动会变慢（回到屏蔽前状态）\n\n确定停用屏蔽吗？'):
+            return
         if not run_elevated(arg):
             self.tip.config(text='✕ 未能启动管理员进程（UAC 被取消）', fg=C['red'])
             return
         self.tip.config(text='⏳ 已发起，等待 UAC 确认后自动刷新…', fg=C['blue'])
         threading.Thread(target=self._watch_hosts, daemon=True).start()
+
+    def _watch_files(self):
+        """常态监听 hosts 内容变化（外部手改也即时刷新）"""
+        if self._closed:
+            return
+        sig = self._hosts_sig()
+        if getattr(self, '_last_sig', None) is not None and sig != self._last_sig:
+            self.refresh_async()
+        self._last_sig = sig
+        self.root.after(2000, self._watch_files)
 
     def _watch_hosts(self):
         import time
@@ -496,6 +726,24 @@ class App:
         except OSError:
             return None
 
+    def toggle_autostart(self):
+        on = self.auto_var.get()
+        if autostart_set(on):
+            self.tip.config(text=f'✓ 开机自启已{"开启" if on else "关闭"}', fg=C['green'])
+        else:
+            self.auto_var.set(not on)
+            self.tip.config(text='✕ 自启设置失败（注册表写入被拒）', fg=C['red'])
+
+    def copy_diagnose(self):
+        try:
+            r = subprocess.run(self_cmd_args('--diagnose'), capture_output=True,
+                               timeout=30, encoding='utf-8', errors='replace')
+            self.root.clipboard_clear()
+            self.root.clipboard_append(r.stdout)
+            self.tip.config(text='✓ 诊断报告已复制到剪贴板', fg=C['green'])
+        except Exception as e:
+            self.tip.config(text=f'✕ 诊断失败：{str(e)[:60]}', fg=C['red'])
+
     def toggle_statsig(self):
         lines = read_hosts()
         _, sg = block_state(lines) if lines else (None, None)
@@ -516,7 +764,11 @@ if __name__ == '__main__':
         tk.messagebox.showinfo('Codex 网络开关', '已在运行，请使用已有窗口。')
         sys.exit(0)
     root = tk.Tk()
+    if load_theme() == 'dark':
+        C.update(DARK)
     app = App(root)
     app._resize_center()
+    if '--minimize' in sys.argv:
+        root.iconify()
     root.protocol('WM_DELETE_WINDOW', lambda: (setattr(app, '_closed', True), root.destroy()))
     root.mainloop()
