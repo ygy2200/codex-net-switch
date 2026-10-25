@@ -45,7 +45,7 @@ def self_cmd_args(cli_arg):
         return [sys.executable, cli_arg]
     return [sys.executable, os.path.abspath(__file__), cli_arg]
 
-VERSION = '2.0.1'
+VERSION = '2.0.2'
 HOSTS = r'C:\Windows\System32\drivers\etc\hosts'
 BEGIN = '# >>> CODEX-OFFSHORE-BLOCK (managed by codex_net_switch) >>>'
 END   = '# <<< CODEX-OFFSHORE-BLOCK <<<'
@@ -97,7 +97,7 @@ def read_hosts():
         return None
 
 def strip_managed(lines):
-    """删除标准块与旧标记块，返回 (剩余行, 旧块是否存在)"""
+    """删除标准块与旧标记块，返回 (剩余行, 旧块是否存在, 块是否损坏)"""
     out, in_block, old_found = [], False, False
     i = 0
     while i < len(lines):
@@ -123,14 +123,17 @@ def strip_managed(lines):
         i += 1
     while out and out[-1].strip() == '':
         out.pop()
-    return out, old_found
+    return out, old_found, in_block  # 循环完仍 in_block = 有 BEGIN 无 END，块损坏
 
 def write_block(mode, statsig_on=True):
     """mode: apply / remove；需管理员。返回 (ok, msg)"""
     lines = read_hosts()
     if lines is None:
         return False, '无法读取 hosts（权限）'
-    rest, old_found = strip_managed(lines)
+    rest, old_found, broken = strip_managed(lines)
+    if broken:
+        return False, ('hosts 屏蔽块标记损坏（有 BEGIN 无 END）：'
+                       '请手动删除损坏的标记块后再操作，工具拒绝在损坏文件上写入')
     if mode == 'apply':
         rest = rest + [''] + build_block(statsig_on) + ['']
     rotate_backup()
@@ -278,12 +281,15 @@ if len(sys.argv) > 1:
     if a == '--remove':
         ok, msg = write_block('remove'); uac_log(f'--remove: {ok} {msg}'); print(msg); sys.exit(0 if ok else 1)
     if a == '--statsig':
+        arg = sys.argv[2].lower() if len(sys.argv) > 2 else ''
+        if arg not in ('on', 'off'):
+            print('用法: --statsig on|off'); sys.exit(1)
         lines = read_hosts()
         present, _ = block_state(lines) if lines else (False, None)
         if not present:
             print('屏蔽块未启用，请先 --apply 再切 statsig'); sys.exit(1)
-        ok, msg = write_block('apply', statsig_on=(sys.argv[2] == 'on'))
-        uac_log(f'--statsig {sys.argv[2]}: {ok} {msg}')
+        ok, msg = write_block('apply', statsig_on=(arg == 'on'))
+        uac_log(f'--statsig {arg}: {ok} {msg}')
         print(msg); sys.exit(0 if ok else 1)
     if a == '--status':
         lines = read_hosts()
@@ -326,14 +332,18 @@ if len(sys.argv) > 1:
                       all(l.startswith('# ') for l in sg) and len(sg) == 2))
         host_like = ['# header', BEGIN, '127.0.0.1 auth.openai.com', '::1 auth.openai.com',
                      '# 127.0.0.1 statsigapi.net  # [statsig] 放行中', END, '1.2.3.4 other.com']
-        rest, old = strip_managed(host_like)
+        rest, old, broken = strip_managed(host_like)
         tests.append(('strip keeps outside lines', rest == ['# header', '1.2.3.4 other.com']))
         tests.append(('strip no-old-marker', old is False))
+        tests.append(('strip healthy not broken', broken is False))
         old_like = ['# x', '# codex sentry block 2026-10-25 - delete', '127.0.0.1 o33249.ingest.sentry.io',
                     '# codex offshore block 2026-10-25 (C-level)', '127.0.0.1 auth.openai.com', '::1 auth.openai.com',
                     '2.3.4.5 mine.com']
-        rest2, old2 = strip_managed(old_like)
+        rest2, old2, _ = strip_managed(old_like)
         tests.append(('strip old blocks keeps others', rest2 == ['# x', '2.3.4.5 mine.com'] and old2 is True))
+        broken_like = ['# header', BEGIN, '127.0.0.1 auth.openai.com', '1.2.3.4 user-own-line.com']
+        rest3, _, broken3 = strip_managed(broken_like)
+        tests.append(('broken block detected (BEGIN no END)', broken3 is True))
         cur = read_hosts()
         if cur is not None:
             present, sgx = block_state(cur)
@@ -365,7 +375,15 @@ if len(sys.argv) > 1:
             with open(fake, encoding='ascii') as f:
                 final = f.read()
             t3 = ('fake-hosts remove restores original exactly', final == '# original\n1.2.3.4 keep.me\n')
-            for n, ok in (t1, t2, t3):
+            write_block('apply'); write_block('apply')
+            t4 = ('fake-hosts duplicate blocks collapse to one',
+                  open(fake, encoding='ascii').read().count(BEGIN) == 1)
+            broken_content = '# header\n' + BEGIN + '\n127.0.0.1 x\n1.2.3.4 keep.me\n'
+            open(fake, 'w', encoding='ascii').write(broken_content)
+            okb, _msgb = write_block('apply')
+            t5 = ('fake-hosts broken block refuses write & keeps file',
+                  okb is False and open(fake, encoding='ascii').read() == broken_content)
+            for n, ok in (t1, t2, t3, t4, t5):
                 tests.append((n, ok)); print(('PASS' if ok else 'FAIL'), n)
                 if not ok: bad.append(n)
         finally:
