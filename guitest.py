@@ -1,9 +1,10 @@
-import importlib.util, ctypes, sys
+import importlib.util, ctypes, sys, os
 try:
     ctypes.windll.shcore.SetProcessDpiAwareness(1)
 except Exception:
     pass
-spec = importlib.util.spec_from_file_location('cns', r'D:\codex\codex-net-switch\codex_net_switch.pyw')
+_HERE = os.path.dirname(os.path.abspath(__file__))
+spec = importlib.util.spec_from_file_location('cns', os.path.join(_HERE, 'codex_net_switch.pyw'))
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
 import tkinter as tk

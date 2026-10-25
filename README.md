@@ -86,6 +86,19 @@ python -m PyInstaller --onefile --noconsole --name CodexNetSwitch \
 - 屏蔽块带 `>>> CODEX-OFFSHORE-BLOCK >>>` 标记，工具只增删自己的块，不碰 hosts 其他内容
 - 需要临时用回 OpenAI 官方账号 / 云端功能时，一键停用即可
 
+## 测试
+
+```
+python codex_net_switch.pyw --selftest   # 14 项逻辑自测（含对抗用例：残块拒写/双块归一等）
+python guitest.py                        # 11 项 GUI 交互测试（需桌面环境，会短暂弹出窗口）
+```
+
+## 卸载
+
+1. 先点「停用屏蔽」恢复 hosts 原样（或手动删除 hosts 中 `>>> CODEX-OFFSHORE-BLOCK >>>` 标记块）
+2. 取消勾选「开机自启」（或删注册表 `HKCU\...\Run` 里的 `CodexNetSwitch`）
+3. 删除 exe（桌面快捷方式一并删除）。etc 目录下的 `hosts.bak-*` 备份可留可删
+
 ## License
 
 MIT
